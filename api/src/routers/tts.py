@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
 from api.src.services.tts_service import TTSService
+from foreign_whispers.voice_resolution import resolve_speaker_wav
 
 router = APIRouter(prefix="/api")
 
@@ -27,11 +28,13 @@ async def tts_endpoint(
     request: Request,
     config: str = Query(..., pattern=r"^c-[0-9a-f]{7}$"),
     alignment: bool = Query(False),
+    speaker_wav: str = Query(None, description="Reference voice WAV path relative to speakers/ (e.g. 'es/default.wav'). Omit to auto-resolve."),
 ):
     """Generate TTS audio for a translated transcript.
 
     *config* is an opaque directory name for caching.
     *alignment* enables temporal alignment (clamped stretch).
+    *speaker_wav* selects a Chatterbox voice-cloning reference file.
     """
     trans_dir = settings.translations_dir
     audio_dir = settings.tts_audio_dir / config
@@ -57,8 +60,28 @@ async def tts_endpoint(
 
     source_path = str(trans_dir / f"{title}.json")
 
+    # Auto-resolve speaker WAV and build per-speaker voice map
+    if speaker_wav is None:
+        speaker_wav = resolve_speaker_wav(settings.speakers_dir, "es")
+
+    voice_map: dict[str, str] | None = None
+    try:
+        trans_data = json.loads(pathlib.Path(source_path).read_text())
+        segments = trans_data.get("segments", [])
+        unique_speakers = sorted(
+            set(seg.get("speaker") for seg in segments if seg.get("speaker"))
+        )
+        if unique_speakers:
+            voice_map = {
+                spk: resolve_speaker_wav(settings.speakers_dir, "es", spk)
+                for spk in unique_speakers
+            }
+    except Exception:
+        pass
+
     await _run_in_threadpool(
-        None, svc.text_file_to_speech, source_path, str(audio_dir), alignment=alignment
+        None, svc.text_file_to_speech, source_path, str(audio_dir),
+        alignment=alignment, speaker_wav=speaker_wav, voice_map=voice_map,
     )
 
     return {
