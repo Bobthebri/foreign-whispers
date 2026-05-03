@@ -7,10 +7,27 @@ from foreign_whispers.reranking import (
 )
 
 
-def test_get_shorter_returns_empty_stub():
-    """Stub returns [] until students implement it."""
-    result = get_shorter_translations("hello", "hola", 1.0)
-    assert result == []
+def test_get_shorter_returns_candidates():
+    """Verify that rule-based shortenings are applied and return candidates."""
+    baseline = "hola sin embargo en este momento"
+    # Expected transformations:
+    # "sin embargo" -> "pero"
+    # "en este momento" -> "ahora"
+    # Result should be "hola pero ahora"
+    
+    candidates = get_shorter_translations("hello however right now", baseline, 1.0)
+    
+    assert len(candidates) > 1, "Should return baseline plus at least one shortened candidate"
+    
+    shortest = candidates[0]
+    assert shortest.text == "hola pero ahora", f"Shortest text was {shortest.text}"
+    assert shortest.char_count == len("hola pero ahora")
+    assert "pero" in shortest.brevity_rationale
+    assert "ahora" in shortest.brevity_rationale
+    
+    baseline_candidate = candidates[-1]
+    assert baseline_candidate.text == baseline
+    assert baseline_candidate.brevity_rationale == "baseline"
 
 
 def test_analyze_failures_returns_dataclass():

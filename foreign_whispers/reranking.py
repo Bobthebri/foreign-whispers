@@ -7,8 +7,31 @@ SegmentMetrics.  The translation re-ranking function is a **student assignment**
 
 import dataclasses
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Simple substitutions mapping for Spanish rule-based shortening.
+SPANISH_SHORTENINGS = {
+    r"\bsin embargo\b": "pero",
+    r"\ben este momento\b": "ahora",
+    r"\ben el caso de que\b": "si",
+    r"\bcon el fin de\b": "para",
+    r"\ba pesar de que\b": "aunque",
+    r"\bpor lo tanto\b": "así que",
+    r"\bdebido a que\b": "porque",
+    r"\bdebido al hecho de que\b": "porque",
+    r"\bde acuerdo con\b": "según",
+    r"\bcon respecto a\b": "sobre",
+    r"\bes necesario\b": "hay que",
+    r"\bde manera rápida\b": "rápido",
+    r"\bde manera eficiente\b": "bien",
+    r"\bse puede observar\b": "se ve",
+    r"\badicionalmente\b": "además",
+    r"\bpor consiguiente\b": "por eso",
+    r"\bpara poder\b": "para",
+    r"\bcon el propósito de\b": "para",
+}
 
 
 @dataclasses.dataclass
@@ -158,9 +181,44 @@ def get_shorter_translations(
         Empty list (stub).  Implement to return ``TranslationCandidate`` items.
     """
     logger.info(
-        "get_shorter_translations called for %.1fs budget (%d chars baseline) — "
-        "returning empty list (student assignment stub).",
+        "get_shorter_translations called for %.1fs budget (%d chars baseline)",
         target_duration_s,
         len(baseline_es),
     )
-    return []
+
+    budget_chars = int(target_duration_s * 15)
+    candidates = []
+
+    # Always consider the baseline as a candidate (it might be the only one, or already fit).
+    candidates.append(TranslationCandidate(
+        text=baseline_es,
+        char_count=len(baseline_es),
+        brevity_rationale="baseline"
+    ))
+
+    # If the baseline is already within budget, we can still provide shorter ones,
+    # but the primary need is when it exceeds the budget.
+    
+    current_text = baseline_es
+    applied_rules = []
+    
+    # Iteratively apply rules to generate progressively shorter candidates
+    for pattern, replacement in SPANISH_SHORTENINGS.items():
+        # Case insensitive substitution
+        new_text, count = re.subn(pattern, replacement, current_text, flags=re.IGNORECASE)
+        if count > 0:
+            current_text = new_text
+            clean_pattern = pattern.replace(r"\b", "")
+            applied_rules.append(f"'{clean_pattern}' -> '{replacement}'")
+            candidates.append(TranslationCandidate(
+                text=current_text,
+                char_count=len(current_text),
+                brevity_rationale=", ".join(applied_rules)
+            ))
+            
+            # If we've reached the budget, we could stop, but it's fine to provide
+            # all variations and let the caller decide.
+
+    # Sort candidates by character count (shortest first)
+    candidates.sort(key=lambda c: c.char_count)
+    return candidates
