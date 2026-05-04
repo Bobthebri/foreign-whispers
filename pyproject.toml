@@ -45,6 +45,7 @@ constraint-dependencies = [
     "onnxruntime<1.24",
     "numpy<2",
     "transformers<4.46",
+    "torchaudio==2.1.0",
 ]
 find-links = [
     "https://download.pytorch.org/whl/cu128",
