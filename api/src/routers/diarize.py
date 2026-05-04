@@ -57,13 +57,17 @@ async def diarize_endpoint(video_id: str):
     )
 
     # Step 2: Run diarization
-    diar_segments = _alignment_service.diarize(str(audio_path))
+    try:
+        diar_segments = _alignment_service.diarize(str(audio_path))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Diarization failed: {exc}") from exc
 
     # Step 3: Extract unique speakers
     speakers = sorted(set(s["speaker"] for s in diar_segments))
 
-    # Step 4: Cache result
-    diar_path.write_text(json.dumps({"speakers": speakers, "segments": diar_segments}))
+    # Step 4: Cache result (only when diarization produced output)
+    if diar_segments:
+        diar_path.write_text(json.dumps({"speakers": speakers, "segments": diar_segments}))
 
     # Step 5: Merge speaker labels into transcription
     transcript_path = settings.transcriptions_dir / f"{title}.json"
