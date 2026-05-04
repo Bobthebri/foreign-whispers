@@ -30,15 +30,19 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
         logger.warning("pyannote.audio not installed — returning empty diarization.")
         return []
 
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
-    )
-    diarization = pipeline(audio_path)
-    return [
-        {"start_s": turn.start, "end_s": turn.end, "speaker": speaker}
-        for turn, _, speaker in diarization.itertracks(yield_label=True)
-    ]
+    try:
+        pipeline    = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
+        diarization = pipeline(audio_path)
+        return [
+            {"start_s": turn.start, "end_s": turn.end, "speaker": speaker}
+            for turn, _, speaker in diarization.itertracks(yield_label=True)
+        ]
+    except Exception as exc:
+        logger.warning("Diarization failed for %s: %s", audio_path, exc)
+        return []
 
 
 def assign_speakers(
