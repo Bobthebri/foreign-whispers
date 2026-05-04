@@ -64,7 +64,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    command: ["uv", "run", "uvicorn", "api.src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uv", "run", "--no-sync", "uvicorn", "api.src.main:app", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       - CHATTERBOX_API_URL=http://host.docker.internal:8020
       - FW_WHISPER_MODEL=base

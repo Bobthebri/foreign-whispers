@@ -37,7 +37,7 @@ dev = [
 alignment = [
     "logfire",
     "silero-vad",
-    "pyannote.audio",
+    "pyannote-audio",
 ]
 
 [tool.uv]
@@ -45,7 +45,8 @@ constraint-dependencies = [
     "onnxruntime<1.24",
     "numpy<2",
     "transformers<4.46",
-    "torchaudio==2.1.0",
+    "torch<2.9",
+    "torchaudio<2.9",
 ]
 find-links = [
     "https://download.pytorch.org/whl/cu128",
