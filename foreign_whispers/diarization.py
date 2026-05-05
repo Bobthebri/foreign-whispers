@@ -26,6 +26,14 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
 
     try:
         from pyannote.audio import Pipeline
+        import torch
+        # PyTorch >=2.6 defaults to weights_only=True, breaking PyAnnote's checkpoint loading.
+        # We patch torch.load to force weights_only=False during Pipeline loading.
+        _original_load = torch.load
+        def _patched_load(*args, **kwargs):
+            kwargs['weights_only'] = False
+            return _original_load(*args, **kwargs)
+        torch.load = _patched_load
     except (ImportError, TypeError):
         logger.warning("pyannote.audio not installed — returning empty diarization.")
         return []
