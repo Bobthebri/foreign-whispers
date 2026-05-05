@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -14,25 +15,51 @@ router = APIRouter(prefix="/api")
 
 _download_service = DownloadService(ui_dir=settings.data_dir)
 
+_YT_ID_RE = re.compile(r"(?:v=|/)([0-9A-Za-z_-]{11})")
+
+
+def _extract_video_id(url: str) -> str | None:
+    """Extract YouTube video ID from URL without a network call."""
+    m = _YT_ID_RE.search(url)
+    return m.group(1) if m else None
+
 
 @router.post("/download", response_model=DownloadResponse)
 async def download_endpoint(body: DownloadRequest):
-    """Download video and captions, returning video_id and caption segments."""
-    video_id, title = _download_service.get_video_info(body.url)
+    """Download video and captions, returning video_id and caption segments.
 
-    # Use title from registry; fall back to yt-dlp title with colons stripped
-    entry = get_video(video_id)
-    stem = entry.title if entry else title.replace(":", "")
-
+    Fast-path: if the video is already in the registry and both the MP4 and
+    caption files exist on disk, return immediately — no yt-dlp network call.
+    """
     videos_dir = settings.videos_dir
     captions_dir = settings.youtube_captions_dir
     videos_dir.mkdir(parents=True, exist_ok=True)
     captions_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Fast-path: skip yt-dlp entirely when both files are cached ──────
+    video_id = _extract_video_id(body.url)
+    if video_id:
+        entry = get_video(video_id)
+        if entry:
+            video_path = videos_dir / f"{entry.title}.mp4"
+            caption_path = captions_dir / f"{entry.title}.txt"
+            if video_path.exists() and caption_path.exists():
+                segments = _download_service.read_caption_segments(caption_path)
+                return DownloadResponse(
+                    video_id=video_id,
+                    title=entry.title,
+                    caption_segments=segments,
+                )
+
+    # ── Slow-path: fetch metadata from YouTube (needed for new videos) ──
+    video_id, title = _download_service.get_video_info(body.url)
+
+    entry = get_video(video_id)
+    stem = entry.title if entry else title.replace(":", "")
+
     video_path = videos_dir / f"{stem}.mp4"
     caption_path = captions_dir / f"{stem}.txt"
 
-    # Skip re-download if both files exist
     if not video_path.exists():
         _download_service.download_video(body.url, str(videos_dir), stem)
 
