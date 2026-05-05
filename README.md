@@ -1,26 +1,27 @@
 # Foreign Whispers
-Project was completed by Bryan Wang and Maiya Duran
-
-
 [![License: AGPL-3.0 + Commons Clause](https://img.shields.io/badge/License-Source_Available-blue.svg)](./LICENSE)
 
 YouTube video dubbing pipeline — transcribe, translate, and dub 60 Minutes interviews into a target language.
 
 ---
+Project was completed by Bryan Wang and Maiya Duran
 
+Link to videos:
+https://drive.google.com/drive/folders/1VbOlLp8TH6GDzoHS6DE4EMuLCmWA91kL
 ## Implementation Status
 
 All core pipeline stages and assigned notebook tasks have been completed.
+TLDR: we followed the steps on the project description website and implemented this notebook by notebook. Read known issues for more information.
 
-### ✅ Download Integration
+### Download Integration
 - `POST /api/download` accepts a YouTube URL, downloads the MP4 and captions via yt-dlp.
 - **Optimization:** Added a fast-path cache check that extracts the video ID from the URL with a regex and skips the yt-dlp network call entirely when both the video file and caption file already exist on disk. This reduced the download stage from 200+ seconds to under 1 second for cached videos.
 
-### ✅ Transcription Integration
+### Transcription Integration
 - `POST /api/transcribe/{id}` runs Whisper (`faster-whisper-medium`) via the GPU STT container.
 - Results are cached as JSON; re-runs return immediately with `skipped: true`.
 
-### ✅ Diarization Integration (Tasks 1–5)
+### Diarization Integration (Tasks 1–5)
 - **Task 1:** `diarize_audio()` implemented in `foreign_whispers/diarization.py` using `pyannote/speaker-diarization-3.1`.
 - **Task 2:** `assign_speakers()` merges pyannote intervals into Whisper segments by maximum temporal overlap.
 - **Task 3:** `POST /api/diarize/{video_id}` endpoint with result caching and automatic transcription label injection.
@@ -28,11 +29,11 @@ All core pipeline stages and assigned notebook tasks have been completed.
 - **Task 5:** Per-speaker TTS voice selection — each diarized speaker is assigned a unique reference WAV.
 - **Performance fix:** The ffmpeg audio extraction and pyannote inference are now run inside `asyncio.to_thread()`, preventing the blocking calls from freezing the FastAPI event loop and causing proxy timeouts on long-form videos (53+ minutes).
 
-### ✅ Translation Integration
+### Translation Integration
 - `POST /api/translate/{id}` translates all segments from English → Spanish offline using argostranslate.
 - Reranking selects among N translation candidates to minimize duration mismatch.
 
-### ✅ Alignment Integration
+### Alignment Integration
 - `global_align()` assigns a stretch action to each segment: `ACCEPT`, `MILD_STRETCH`, `REQUEST_SHORTER`, or `FAIL`.
 - Duration estimation uses a **simple linear regression model** trained on empirical TTS output data:
   ```
@@ -41,73 +42,48 @@ All core pipeline stages and assigned notebook tasks have been completed.
   This model outperforms the naive syllable-rate heuristic (`syllables / 4.5`) because it accounts for the fixed per-utterance overhead (breath, TTS startup latency), producing a non-zero intercept that avoids systematic under-prediction on short segments.
 - Reranking (`reranking.py`) selects the translation candidate whose estimated duration most closely fits the target window, minimizing time-stretch.
 
-### ✅ TTS Integration (Tasks 1–4)
+### TTS Integration (Tasks 1–4)
 - **Task 1:** Understood the existing Chatterbox client (`ChatterboxClient`) and its `speaker_wav` parameter.
 - **Task 2:** Implemented `resolve_speaker_wav()` in `foreign_whispers/voice_resolution.py`. Uses a three-level resolution chain: `speakers/{lang}/{speaker_id}.wav` → `speakers/{lang}/default.wav` → `speakers/default.wav`.
 - **Task 3:** Added `speaker_wav` query parameter to `POST /api/tts/{id}` and `speakers_dir` property to `Settings`.
 - **Task 4:** Per-speaker voice assignment: the TTS endpoint reads speaker labels from the translated transcript, builds a `voice_map` via `resolve_speaker_wav`, and passes the correct reference WAV to Chatterbox for each segment.
 
-### ✅ Stitch Integration
+### Stitch Integration
 - `POST /api/stitch/{id}` remuxes the TTS WAV into the original MP4 using `ffmpeg -c:v copy`, replacing the audio track with zero re-encoding.
-
----
-
-## Performance
-
-Benchmarked on a machine with an NVIDIA GPU and 16 CPU cores:
-
-| Video | Duration | Download | Transcribe | Diarize | Translate | TTS | Stitch |
-|---|---|---|---|---|---|---|---|
-| Strait of Hormuz | ~5 min | ~2s (cached) | ~8s | ~45s | ~12s | ~4 min | ~1s |
-| Alysa Liu | ~20 min | ~2s (cached) | ~30s | ~3 min | ~40s | ~15 min | ~2s |
-| Rob Reiner | ~60 min | ~2s (cached) | ~90s | ~10 min | ~2 min | ~45 min | ~4s |
-
-Key performance decisions:
-- **Download fast-path** eliminates the yt-dlp network round-trip for all cached videos, reducing the stage from 200s+ to under 2s.
-- **Diarization threading** (`asyncio.to_thread`) ensures other pipeline requests can continue processing while pyannote runs on a long video.
-- **Concurrent TTS synthesis** — segments are synthesized in parallel via a `ThreadPoolExecutor`, significantly reducing total TTS time on multi-core machines.
-- **ffmpeg remux** (no re-encode) keeps the stitch stage under 5 seconds regardless of video length.
 
 ---
 
 ## Known Issues
 
-### pyannote / PyTorch Backward Compatibility
-The most significant environment challenge encountered during development was a **breaking incompatibility between pyannote.audio and newer versions of PyTorch** introduced in PyTorch ≥ 2.6.
+We couldn't get the last video because diarization kept timing out due to the length of the video. We feel like we completed each step correctly though of the tasks.
+
+pyannote / PyTorch Backward Compatibility
+The most significant environment challenge encountered during development was a breaking incompatibility between pyannote.audio and newer versions of PyTorch introduced in PyTorch ≥ 2.6. It took us very long to fix this.
 
 Starting in PyTorch 2.6, `torch.load()` defaults to `weights_only=True` as a security hardening measure. However, pyannote's checkpoint loading relies on serialized Python objects that are incompatible with `weights_only=True`, causing the pipeline load to fail immediately with a cryptic deserialization error. This was particularly difficult to diagnose because the error message did not clearly indicate the root cause.
 
-The fix required monkey-patching `torch.load` at import time to force `weights_only=False` during the Pipeline initialization:
-
-```python
-_original_load = torch.load
-def _patched_load(*args, **kwargs):
-    kwargs['weights_only'] = False
-    return _original_load(*args, **kwargs)
-torch.load = _patched_load
-```
-
 This is applied in `foreign_whispers/diarization.py` and is necessary because the GPU containers ship with PyTorch ≥ 2.6 (required for CUDA compatibility with our hardware), and downgrading PyTorch to a version that is compatible with unpatched pyannote would break GPU inference entirely. There is no clean upstream fix available — pyannote has not yet released a version that supports `weights_only=True`.
 
-### Audio Segments Cut Off / Gaps of Silence
-When a translated Spanish segment is longer than the original English window, `tts_engine.py` caps time-stretching at 1.25× (`SPEED_MAX`). Any audio that still exceeds the window after maximum stretching is **hard-truncated**, causing words to be cut off mid-sentence. Segments where TTS entirely fails (API timeout, GPU OOM) are replaced with silence.
+Audio Segments Cut Off / Gaps of Silence
+When a translated Spanish segment is longer than the original English window, `tts_engine.py` caps time-stretching at 1.25× (`SPEED_MAX`). Any audio that still exceeds the window after maximum stretching is hard-truncated, causing words to be cut off mid-sentence. Segments where TTS entirely fails (API timeout, GPU OOM) are replaced with silence.
 
-**Root cause:** The alignment stage's duration estimate occasionally under-predicts, causing the reranker to accept translations that are too long. The linear regression model mitigates this compared to the simple syllable-rate heuristic, but cannot fully compensate for sentences where Spanish is structurally much longer than the English equivalent.
+Root cause: The alignment stage's duration estimate occasionally under-predicts, causing the reranker to accept translations that are too long. The linear regression model mitigates this compared to the simple syllable-rate heuristic, but cannot fully compensate for sentences where Spanish is structurally much longer than the English equivalent.
 
-**Partial mitigation:** The `global_align()` `GAP_SHIFT` action attempts to extend a segment's window into adjacent silence. However, `tts_engine.py` currently uses the original segment boundaries rather than the shifted schedule, so the full benefit of gap-shifting is not yet realized.
+Partial mitigation: The `global_align()` `GAP_SHIFT` action attempts to extend a segment's window into adjacent silence. However, `tts_engine.py` currently uses the original segment boundaries rather than the shifted schedule, so the full benefit of gap-shifting is not yet realized.
 
-### Diarization Timeout on Long Videos
+Diarization Timeout on Long Videos
 For videos longer than ~30 minutes (e.g., Military Drones at 53 min), pyannote's diarization can take 10–20 minutes. Prior to the `asyncio.to_thread` fix, this would cause the frontend proxy to report an Internal Server Error even though processing was still ongoing. The fix ensures the server stays responsive, but the frontend has no progress indicator for long-running diarization — it shows "Running" until completion with no estimated time remaining.
 
-### TTS Tensor Shape Mismatch
+TTS Tensor Shape Mismatch
 Occasionally the Chatterbox TTS server throws:
 ```
 stack expects each tensor to be equal size, but got [1, 22] at entry 0 and [1, 15] at entry 66
 ```
 This is an internal model error triggered by certain input texts (very short or punctuation-heavy segments). The affected segment is silently replaced with silence. This is a limitation of the upstream Chatterbox model and cannot be fixed at the pipeline level.
 
-### Frontend Proxy Instability
+Frontend Proxy Instability
 The Next.js frontend proxy to the FastAPI backend (`host.docker.internal:8080`) occasionally drops connections with `ECONNRESET / socket hang up` errors. This appears to be a Docker networking intermittency rather than an application bug, and typically resolves on retry without any code changes.
+
 
 ---
 
