@@ -1,6 +1,4 @@
 # Foreign Whispers
-Project was completed by Bryan Wang and Maiya Duran
-
 
 [![License: AGPL-3.0 + Commons Clause](https://img.shields.io/badge/License-Source_Available-blue.svg)](./LICENSE)
 

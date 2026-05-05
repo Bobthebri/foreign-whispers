@@ -1,6 +1,5 @@
 """POST /api/diarize/{video_id} — speaker diarization."""
 
-import asyncio
 import json
 import subprocess
 
@@ -17,35 +16,6 @@ router = APIRouter(prefix="/api")
 _alignment_service = AlignmentService(settings=settings)
 
 
-def _run_diarization(video_path, audio_path, title, transcript_path, hf_token) -> tuple[list, list]:
-    """Blocking work: ffmpeg audio extraction + pyannote diarization.
-
-    Runs in a thread pool via asyncio.to_thread so the event loop stays free.
-    Returns (speakers, diar_segments).
-    """
-    # Step 1: Extract audio
-    subprocess.run(
-        ["ffmpeg", "-i", str(video_path), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-y", str(audio_path)],
-        check=True, capture_output=True,
-    )
-
-    # Step 2: Run diarization
-    from foreign_whispers.diarization import diarize_audio
-    diar_segments = diarize_audio(str(audio_path), hf_token=hf_token)
-
-    # Step 3: Unique speakers
-    speakers = sorted(set(s["speaker"] for s in diar_segments))
-
-    # Step 4: Merge speaker labels into transcription
-    if transcript_path.exists():
-        transcript = json.loads(transcript_path.read_text())
-        labeled_segments = assign_speakers(transcript.get("segments", []), diar_segments)
-        transcript["segments"] = labeled_segments
-        transcript_path.write_text(json.dumps(transcript))
-
-    return speakers, diar_segments
-
-
 @router.post("/diarize/{video_id}", response_model=DiarizeResponse)
 async def diarize_endpoint(video_id: str):
     title = resolve_title(video_id)
@@ -56,7 +26,6 @@ async def diarize_endpoint(video_id: str):
     diar_dir.mkdir(parents=True, exist_ok=True)
     diar_path = diar_dir / f"{title}.json"
 
-    # Fast-path: return cached result immediately
     if diar_path.exists():
         data = json.loads(diar_path.read_text())
         return DiarizeResponse(
@@ -66,19 +35,29 @@ async def diarize_endpoint(video_id: str):
             skipped=True,
         )
 
+    # Step 1: Extract audio
     video_path = settings.videos_dir / f"{title}.mp4"
     audio_path = diar_dir / f"{title}.wav"
-    transcript_path = settings.transcriptions_dir / f"{title}.json"
-
-    # Offload blocking ffmpeg + pyannote to a thread — keeps the event loop free
-    speakers, diar_segments = await asyncio.to_thread(
-        _run_diarization,
-        video_path, audio_path, title, transcript_path,
-        settings.hf_token or None,
+    subprocess.run(
+        ["ffmpeg", "-i", str(video_path), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-y", str(audio_path)],
+        check=True, capture_output=True,
     )
 
-    # Cache result
+    # Step 2: Run diarization
+    diar_segments = _alignment_service.diarize(str(audio_path))
+
+    # Step 3: Unique speakers
+    speakers = sorted(set(s["speaker"] for s in diar_segments))
+
+    # Step 4: Cache result
     diar_path.write_text(json.dumps({"speakers": speakers, "segments": diar_segments}))
 
-    return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
+    # Step 5: Merge speaker labels into transcription (Task 3)
+    transcript_path = settings.transcriptions_dir / f"{title}.json"
+    if transcript_path.exists():
+        transcript = json.loads(transcript_path.read_text())
+        labeled_segments = assign_speakers(transcript.get("segments", []), diar_segments)
+        transcript["segments"] = labeled_segments
+        transcript_path.write_text(json.dumps(transcript))
 
+    return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
